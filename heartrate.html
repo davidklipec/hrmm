@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simple Tap Heart Rate Tracker</title>
+    <!-- Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Chart.js for visualization -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+    
+    <style>
+        /* Custom font and fixed chart height */
+        body {
+            font-family: 'Inter', sans-serif;
+            min-height: 100vh;
+        }
+        #heartRateChart {
+            height: 300px !important;
+            width: 100%;
+        }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-800 p-4 md:p-8">
+
+    <div class="max-w-4xl mx-auto">
+        <h1 class="text-4xl font-extrabold text-center text-red-600 mb-2">
+            Pulse Tap Tracker
+        </h1>
+        <p class="text-center text-gray-500 mb-8">
+            Tap the button in sync with your pulse (4 or more times) to get your beats per minute (BPM).
+        </p>
+
+        <!-- Current BPM Display and Status -->
+        <div class="mb-8 p-6 bg-white border border-gray-200 rounded-xl shadow-lg text-center">
+            <div class="text-2xl font-semibold text-gray-700">
+                Current BPM:
+            </div>
+            <div id="bpm-display" class="text-8xl font-black text-red-600 my-4 transition-transform duration-300 ease-out">
+                0
+            </div>
+            <p id="status-message" class="text-lg font-medium text-gray-500">
+                Tap 4+ times to measure.
+            </p>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="flex flex-col sm:flex-row gap-4 mb-10">
+            <button id="tap-btn"
+                class="flex-1 px-8 py-5 text-xl font-bold rounded-xl shadow-lg 
+                       transition duration-300 transform hover:scale-[1.02] active:scale-[0.98] 
+                       bg-blue-600 text-white hover:bg-blue-700 focus:outline-none focus:ring-4 focus:ring-blue-300">
+                TAP YOUR PULSE HERE!
+            </button>
+            <button id="save-rate-btn" disabled
+                class="sm:w-40 px-6 py-3 text-lg font-semibold rounded-xl shadow-md 
+                       transition duration-300 disabled:opacity-50 disabled:cursor-not-allowed 
+                       bg-green-500 text-white hover:bg-green-600 focus:outline-none focus:ring-4 focus:ring-green-300">
+                Save Rate
+            </button>
+        </div>
+
+        <!-- History Chart -->
+        <div class="p-6 bg-white border border-gray-200 rounded-xl shadow-lg">
+            <h2 class="text-xl font-semibold mb-4 text-gray-700">Measurement History (Stored Locally)</h2>
+            <div class="w-full h-80">
+                <canvas id="heartRateChart"></canvas>
+            </div>
+            <button id="clear-history-btn"
+                class="mt-4 px-4 py-2 text-sm font-medium rounded-lg shadow-sm
+                       bg-gray-200 text-gray-700 hover:bg-gray-300 focus:outline-none">
+                Clear History
+            </button>
+        </div>
+
+    </div>
+
+    <script>
+        // --- Global State ---
+        let tapTimes = []; // Stores timestamps of taps
+        let tapTimeout;
+        let currentBPM = 0;
+        let heartRateChart = null;
+        let ratesHistory = []; // Stores all fetched rates
+
+        // --- DOM Elements ---
+        const bpmDisplay = document.getElementById('bpm-display');
+        const statusMessage = document.getElementById('status-message');
+        const saveButton = document.getElementById('save-rate-btn');
+        const tapButton = document.getElementById('tap-btn');
+        const clearHistoryButton = document.getElementById('clear-history-btn');
+
+        // --- Local Storage Functions ---
+
+        /**
+         * Loads heart rate history from local storage.
+         */
+        function loadRates() {
+            try {
+                const storedRates = localStorage.getItem('heartRateHistory');
+                if (storedRates) {
+                    ratesHistory = JSON.parse(storedRates);
+                } else {
+                    ratesHistory = [];
+                }
+            } catch (e) {
+                console.error("Error loading rates from localStorage:", e);
+                ratesHistory = [];
+            }
+            updateChart(ratesHistory);
+        }
+
+        /**
+         * Saves the current ratesHistory array back to local storage.
+         */
+        function saveRatesToLocalStorage() {
+            try {
+                localStorage.setItem('heartRateHistory', JSON.stringify(ratesHistory));
+            } catch (e) {
+                console.error("Error saving rates to localStorage:", e);
+            }
+        }
+
+        /**
+         * Clears all saved heart rates and updates the UI.
+         */
+        function clearHistory() {
+            ratesHistory = [];
+            saveRatesToLocalStorage();
+            updateChart(ratesHistory);
+            statusMessage.textContent = 'History cleared. Tap 4+ times to measure.';
+        }
+
+        // --- Heart Rate Logic ---
+
+        /**
+         * Clears the tapping state and resets the UI display.
+         */
+        function resetTapping() {
+            tapTimes = [];
+            currentBPM = 0;
+            bpmDisplay.textContent = '0';
+            statusMessage.textContent = 'Tap 4+ times to measure.';
+            saveButton.disabled = true;
+            tapButton.classList.remove('bg-red-600', 'hover:bg-red-700');
+            tapButton.classList.add('bg-blue-600', 'hover:bg-blue-700');
+        }
+
+        /**
+         * Calculates the BPM based on the last 5 taps (4 intervals).
+         */
+        function calculateBPM() {
+            if (tapTimes.length < 2) return 0;
+
+            const recentTaps = tapTimes.slice(-5);
+            
+            let totalInterval = 0;
+            for (let i = 1; i < recentTaps.length; i++) {
+                totalInterval += recentTaps[i] - recentTaps[i - 1];
+            }
+
+            const numberOfIntervals = recentTaps.length - 1;
+            const averageInterval = totalInterval / numberOfIntervals;
+
+            // Calculate Beats Per Minute: 60,000 milliseconds / average interval in ms
+            return Math.round(60000 / averageInterval);
+        }
+
+        /**
+         * Main tap handler logic.
+         */
+        function handleTap() {
+            const now = Date.now();
+
+            clearTimeout(tapTimeout);
+            tapTimes.push(now);
+
+            // Keep taps relevant (last 8 seconds)
+            tapTimes = tapTimes.filter(t => (now - t) < 8000);
+
+            if (tapTimes.length >= 4) {
+                currentBPM = calculateBPM();
+                bpmDisplay.textContent = currentBPM;
+                statusMessage.textContent = `Measured over ${tapTimes.length - 1} intervals. Rate is stable.`;
+                saveButton.disabled = false;
+                tapButton.classList.remove('bg-blue-600', 'hover:bg-blue-700');
+                tapButton.classList.add('bg-red-600', 'hover:bg-red-700');
+            } else {
+                statusMessage.textContent = `Keep tapping... (${tapTimes.length} taps)`;
+            }
+
+            // Auto-reset if the user stops tapping
+            tapTimeout = setTimeout(resetTapping, 3000);
+        }
+
+        /**
+         * Saves the current BPM measurement to the history.
+         */
+        function saveHeartRate() {
+            if (currentBPM === 0) return;
+
+            const newRate = {
+                bpm: currentBPM,
+                // Use ISO string for consistent storage of date and time
+                timestamp: new Date().toISOString() 
+            };
+            
+            ratesHistory.push(newRate);
+            saveRatesToLocalStorage();
+
+            // After saving, reset tapping state and update chart
+            resetTapping();
+            statusMessage.textContent = `Rate of ${currentBPM} BPM saved! Tap to measure again.`;
+            updateChart(ratesHistory);
+        }
+
+
+        // --- Chart Functions ---
+
+        /**
+         * Draws or updates the Chart.js visualization.
+         * @param {Array} rates - Array of {bpm, timestamp} objects.
+         */
+        function updateChart(rates) {
+            const ctx = document.getElementById('heartRateChart').getContext('2d');
+
+            // Format labels to include the full date and time
+            const labels = rates.map(rate => {
+                const time = new Date(rate.timestamp);
+                // Example format: 11/22/2025, 4:42:00 PM
+                return time.toLocaleString(); 
+            });
+            const data = rates.map(rate => rate.bpm);
+
+            const chartData = {
+                labels: labels,
+                datasets: [{
+                    label: 'Saved Heart Rate (BPM)',
+                    data: data,
+                    borderColor: '#ef4444', // Red 500
+                    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                    borderWidth: 2,
+                    tension: 0.4,
+                    pointRadius: 5,
+                    pointBackgroundColor: '#ef4444',
+                    fill: true
+                }]
+            };
+
+            // Calculate min/max for dynamic Y-axis scaling
+            const maxBPM = Math.max(...data, 100); 
+            const minBPM = Math.min(...data, 60);
+
+            if (heartRateChart) {
+                // Update existing chart
+                heartRateChart.data = chartData;
+                heartRateChart.options.scales.y.max = maxBPM + 10;
+                heartRateChart.options.scales.y.min = minBPM - 10;
+                heartRateChart.update();
+            } else {
+                // Create new chart
+                heartRateChart = new Chart(ctx, {
+                    type: 'line',
+                    data: chartData,
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { display: false },
+                            title: {
+                                display: true,
+                                text: 'Heart Rate History',
+                                font: { size: 16 }
+                            }
+                        },
+                        scales: {
+                            x: {
+                                title: {
+                                    display: true,
+                                    text: 'Date and Time Saved'
+                                }
+                            },
+                            y: {
+                                title: {
+                                    display: true,
+                                    text: 'BPM'
+                                },
+                                beginAtZero: false,
+                                max: maxBPM + 10,
+                                min: minBPM - 10,
+                            }
+                        }
+                    }
+                });
+            }
+        }
+
+        // --- Event Listeners and Init ---
+
+        document.addEventListener('DOMContentLoaded', () => {
+            // Load history from local storage and render chart on page load
+            loadRates();
+
+            // Setup button handlers
+            tapButton.addEventListener('click', handleTap);
+            saveButton.addEventListener('click', saveHeartRate);
+            clearHistoryButton.addEventListener('click', clearHistory);
+            
+            // Initial UI state
+            resetTapping();
+        });
+    </script>
+</body>
+</html>
